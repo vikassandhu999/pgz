@@ -3,8 +3,6 @@ const std = @import("std");
 const Stream = std.net.Stream;
 const Allocator = std.mem.Allocator;
 
-const Msg = @import("./reader.zig");
-
 pub const Writer = struct {
     stream: Stream,
     allocator: Allocator,
@@ -35,10 +33,13 @@ pub const Writer = struct {
         try self.writeInt(u32, 1);
     }
 
-    pub fn sendMsg(self: *Writer) !void {
+    pub fn writeMsgEnd(self: *Writer) !void {
         std.debug.assert(self.cursor > 4);
         try self.writeByte(0);
         std.mem.writeInt(u32, self.buf[self.msgstart..][0..4], @intCast(self.cursor - self.msgstart), .big);
+    }
+
+    pub fn flush(self: *Writer) Stream.WriteError!void {
         try self.stream.writeAll(self.buf[0..self.cursor]);
         self.msgstart = self.cursor;
     }
@@ -71,25 +72,6 @@ pub const Writer = struct {
         if (self.buf.len >= nreq) {
             return;
         }
-        //
-        // // left justify data if we can.
-        // const needed = nreq - self.start;
-        // if (self.start < self.end) {
-        //     if (self.start > 0) {
-        //         @memcpy(self.buf[0 .. self.end - self.start], self.buf[self.start..self.end]);
-        //         self.end -= self.start;
-        //         self.cursor -= self.start;
-        //         self.start = 0;
-        //     }
-        // } else {
-        //     self.start = 0;
-        //     self.end = 0;
-        //     self.cursor = 0;
-        // }
-        // if (self.buf.len >= needed) {
-        //     return;
-        // }
-        //
         var newlen = self.buf.len;
         while (newlen > 0 and true) : (newlen *= 2) {
             if (newlen >= nreq) {

@@ -14,7 +14,7 @@ pub fn main() !void {
         .password = "asdfasdf",
     };
 
-    var conn = try Conn.init(opts, allocator);
+    var conn = try Conn.open(opts, allocator);
 
-    defer conn.deinit();
+    defer conn.close();
 }

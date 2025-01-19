@@ -2,11 +2,7 @@ const std = @import("std");
 
 const Stream = std.net.Stream;
 const Allocator = std.mem.Allocator;
-
-pub const Msg = struct {
-    type: u8,
-    buf: []u8,
-};
+const Message = @import("./protocol/message.zig").Message;
 
 pub const Reader = struct {
     stream: Stream,
@@ -31,7 +27,7 @@ pub const Reader = struct {
         self.allocator.free(self.buf);
     }
 
-    pub fn read(self: *Reader) !Msg {
+    pub fn read(self: *Reader) !Message {
         try self.ensureCapacity(self.end + 5);
         const nread = try self.stream.readAtLeast(self.buf[self.start..], 5);
         if (nread == 0) {
@@ -59,16 +55,14 @@ pub const Reader = struct {
             self.end += nreadmore;
         }
 
-        const msgbuf = self.buf[self.cursor .. self.cursor + buflength];
+        const msgbuf = try self.allocator.dupe(u8, self.buf[self.start .. self.cursor + buflength]);
         self.cursor += msglength;
 
         self.start = self.end;
 
         std.debug.print("\nmsgtype: {c}\nmsglength: {d}\nmsgbuf: {s}\n", .{ msgtype, msglength, msgbuf });
-        return .{
-            .type = msgtype,
-            .buf = msgbuf,
-        };
+
+        return Message.init(msgbuf, self.allocator);
     }
 
     pub fn ensureCapacity(self: *Reader, nreq: usize) !void {
