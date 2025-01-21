@@ -21,6 +21,7 @@ pub const StartupMessage = struct {
         try writer.writeByte(0);
         try writer.write(self.database);
         try writer.writeByte(0);
+        try writer.writeByte(0);
         try writer.writeMsgEnd();
     }
 };

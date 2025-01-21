@@ -6,12 +6,15 @@ const Reader = @import("./reader.zig").Reader;
 const Msg = @import("./reader.zig").Msg;
 const Writer = @import("./writer.zig").Writer;
 const StartupMessage = @import("./protocol/startup_message.zig").StartupMessage;
+const ScramClient = @import("./auth_scram.zig").ScramClient;
 
 pub const Conn = struct {
     stream: Stream,
     allocator: Allocator,
     reader: Reader,
     writer: Writer,
+
+    scramclient: ?ScramClient = undefined,
 
     pub const Opts = struct {
         host: [4]u8,
@@ -42,55 +45,87 @@ pub const Conn = struct {
         };
     }
 
-    pub fn open(opts: Opts, allocator: Allocator) !Conn {
+    pub fn open(opts: Opts, allocator: Allocator) anyerror!Conn {
         var conn = try Conn.init(opts, allocator);
-        try conn.auth(opts);
+
+        var startupmsg = StartupMessage.init(opts.user, opts.database);
+        try startupmsg.write(&conn.writer);
+        try conn.writer.flush();
+
+        try conn.auth();
+
         return conn;
     }
 
     fn auth(
         self: *Conn,
-        opts: Opts,
-    ) !void {
-        var startupmsg = StartupMessage.init(opts.user, opts.database);
-        try startupmsg.write(&self.writer);
-        try self.writer.flush();
-
+    ) anyerror!void {
         var msg = try self.reader.read();
         defer msg.deinit();
 
-        switch (msg.msgtype()) {
+        var reader = msg.reader();
+
+        switch (try reader.readByte()) {
             'R' => {},
             'E' => return error.DBError,
             else => return error.InvalidType,
         }
+
+        // skips 4 bytes for message length;
+        _ = try reader.readInt32();
+
+        const authreq = try reader.readInt32();
+
+        switch (authreq) {
+            0 => return,
+            10 => {
+                var selectedmechanism: ?[]const u8 = null;
+                while (reader.readStringOptional()) |m| {
+                    if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256-PLUS")) {
+                        selectedmechanism = m;
+                    } else if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256") and selectedmechanism == null) {
+                        selectedmechanism = m;
+                    }
+                }
+                return self.auth_sasl(selectedmechanism.?);
+            },
+            11 => {
+                const res = try reader.readAllRemaining();
+                try self.scramclient.?.handle_serverfirstmessage(res);
+            },
+            else => {
+                std.debug.print("unimplemented authreq: {d}", .{authreq});
+                return error.UnImplementedAuthReq;
+            },
+        }
     }
 
-    fn auth_sasl(self: *Conn, msg: Msg) !void {
-        var varmsg = msg;
-        var msgreader = varmsg.reader();
-        const authtype = try msgreader.readInt32();
-        std.debug.assert(authtype == 10);
+    fn auth_sasl(self: *Conn, mechanism: []const u8) anyerror!void {
+        self.scramclient = try ScramClient.init(mechanism, self.allocator);
+        errdefer self.scramclient.?.deinit();
 
-        var scramsha256 = false;
-        var scramsha256plus = false;
-        while (msgreader.readStringOptional()) |mechanism| {
-            if (std.ascii.eqlIgnoreCase(mechanism, "SCRAM-SHA-256")) {
-                scramsha256 = true;
-            }
-            if (std.ascii.eqlIgnoreCase(mechanism, "SCRAM-SHA-256-PLUS")) {
-                scramsha256plus = true;
-            }
+        {
+            const sc = self.scramclient.?;
+
+            try self.writer.writeMsgStart('p');
+            try self.writer.writeString(mechanism);
+            try self.writer.writeInt(i32, @intCast(sc.clientfirstmessage.len));
+            try self.writer.write(sc.clientfirstmessage);
+
+            try self.writer.writeMsgEnd();
+            try self.writer.flush();
         }
 
-        self.writer.writeMsgStart('p');
-        self.writer.write("SCRAM-SHA-256");
+        try self.auth();
     }
 
     pub fn close(self: *Conn) void {
         self.stream.close();
         self.reader.deinit();
         self.writer.deinit();
+        if (self.scramclient) |sc| {
+            sc.deinit();
+        }
         std.debug.print("Connection closed\n", .{});
     }
 };

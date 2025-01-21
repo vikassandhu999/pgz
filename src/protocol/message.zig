@@ -65,6 +65,13 @@ pub const MsgReader = struct {
         return self.readStringOptional() orelse return error.NotAString;
     }
 
+    pub fn readAllRemaining(self: *MsgReader) ![]const u8 {
+        if (self.cursor + 1 >= self.buf.len) return error.NoMoreData;
+        const val = self.buf[self.cursor..];
+        self.cursor = self.buf.len;
+        return val;
+    }
+
     pub fn ended(self: *MsgReader) bool {
         return self.cursor >= self.buf.len;
     }

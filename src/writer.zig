@@ -35,13 +35,12 @@ pub const Writer = struct {
 
     pub fn writeMsgEnd(self: *Writer) !void {
         std.debug.assert(self.cursor > 4);
-        try self.writeByte(0);
         std.mem.writeInt(u32, self.buf[self.msgstart..][0..4], @intCast(self.cursor - self.msgstart), .big);
     }
 
     pub fn flush(self: *Writer) Stream.WriteError!void {
+        std.debug.print("flushmessage: {d}", .{self.buf[0..self.cursor]});
         try self.stream.writeAll(self.buf[0..self.cursor]);
-        self.msgstart = self.cursor;
     }
 
     pub fn writeInt(self: *Writer, comptime T: type, int: T) !void {
@@ -66,6 +65,13 @@ pub const Writer = struct {
         try self.ensureCapacity(self.cursor + bytes.len);
         @memcpy(self.buf[self.cursor .. self.cursor + bytes.len], bytes);
         self.cursor += bytes.len;
+    }
+
+    pub fn writeString(self: *Writer, bytes: []const u8) !void {
+        try self.ensureCapacity(self.cursor + bytes.len);
+        @memcpy(self.buf[self.cursor .. self.cursor + bytes.len], bytes);
+        self.cursor += bytes.len;
+        try self.writeByte(0);
     }
 
     pub fn ensureCapacity(self: *Writer, nreq: usize) !void {

@@ -1,1 +1,0 @@
-pub const AuthenticationSASLContinue = struct {};
