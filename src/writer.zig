@@ -10,6 +10,8 @@ pub const Writer = struct {
     msgstart: usize,
     cursor: usize,
 
+    const Self = @This();
+
     pub fn init(stream: Stream, allocator: Allocator) !Writer {
         return .{
             .buf = &.{},
@@ -20,11 +22,11 @@ pub const Writer = struct {
         };
     }
 
-    pub fn deinit(self: *Writer) void {
+    pub fn deinit(self: *Self) void {
         self.allocator.free(self.buf);
     }
 
-    pub fn writeMsgStart(self: *Writer, msgtype: u8) !void {
+    pub fn writeMsgStart(self: *Self, msgtype: u8) !void {
         self.cursor = 0;
         if (msgtype != 0) {
             try self.writeByte(msgtype);
@@ -33,48 +35,47 @@ pub const Writer = struct {
         try self.writeInt(u32, 1);
     }
 
-    pub fn writeMsgEnd(self: *Writer) !void {
+    pub fn writeMsgEnd(self: *Self) !void {
         std.debug.assert(self.cursor > 4);
         std.mem.writeInt(u32, self.buf[self.msgstart..][0..4], @intCast(self.cursor - self.msgstart), .big);
     }
 
-    pub fn flush(self: *Writer) Stream.WriteError!void {
-        std.debug.print("flushmessage: {d}", .{self.buf[0..self.cursor]});
+    pub fn flush(self: *Self) Stream.WriteError!void {
         try self.stream.writeAll(self.buf[0..self.cursor]);
     }
 
-    pub fn writeInt(self: *Writer, comptime T: type, int: T) !void {
+    pub fn writeInt(self: *Self, comptime T: type, int: T) !void {
         const bytes = try self.advnaceComptime(@divExact(@typeInfo(T).Int.bits, 8));
         std.mem.writeInt(T, bytes, int, .big);
     }
 
-    fn advnaceComptime(self: *Writer, comptime n: usize) !*[n]u8 {
+    fn advnaceComptime(self: *Self, comptime n: usize) !*[n]u8 {
         try self.ensureCapacity(self.cursor + n);
         const res = self.buf[self.cursor..][0..n];
         self.cursor += n;
         return res;
     }
 
-    pub fn writeByte(self: *Writer, byte: u8) !void {
+    pub fn writeByte(self: *Self, byte: u8) !void {
         try self.ensureCapacity(self.cursor + 1);
         self.buf[self.cursor] = byte;
         self.cursor += 1;
     }
 
-    pub fn write(self: *Writer, bytes: []const u8) !void {
+    pub fn write(self: *Self, bytes: []const u8) !void {
         try self.ensureCapacity(self.cursor + bytes.len);
         @memcpy(self.buf[self.cursor .. self.cursor + bytes.len], bytes);
         self.cursor += bytes.len;
     }
 
-    pub fn writeString(self: *Writer, bytes: []const u8) !void {
+    pub fn writeString(self: *Self, bytes: []const u8) !void {
         try self.ensureCapacity(self.cursor + bytes.len);
         @memcpy(self.buf[self.cursor .. self.cursor + bytes.len], bytes);
         self.cursor += bytes.len;
         try self.writeByte(0);
     }
 
-    pub fn ensureCapacity(self: *Writer, nreq: usize) !void {
+    pub fn ensureCapacity(self: *Self, nreq: usize) !void {
         if (self.buf.len >= nreq) {
             return;
         }

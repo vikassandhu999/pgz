@@ -28,14 +28,25 @@ pub const Reader = struct {
     }
 
     pub fn read(self: *Reader) !Message {
-        try self.ensureCapacity(self.end + 5);
-        const nread = try self.stream.readAtLeast(self.buf[self.start..], 5);
-        if (nread == 0) {
-            return error.UnknownError;
-        }
-        self.end += nread;
+        std.debug.assert(self.start <= self.end);
 
-        self.cursor = self.start;
+        const min_toread = blk: {
+            const start: i32 = @intCast(self.start);
+            const end: i32 = @intCast(self.end);
+            break :blk (5 - (end - start));
+        };
+        if (min_toread > 0) {
+            const tsize: usize = @intCast(min_toread);
+            try self.ensureCapacity(self.end + tsize);
+            const nread = try self.stream.readAtLeast(self.buf[self.end..], tsize);
+            if (nread == 0) {
+                return error.UnknownError;
+            }
+            self.end += nread;
+        }
+
+        std.debug.assert(self.cursor + 5 <= self.end);
+
         const msgtype: u8 = std.mem.readInt(u8, self.buf[self.cursor..][0..1], .big);
         self.cursor += 1;
         const msglength: u32 = std.mem.readInt(u32, self.buf[self.cursor..][0..4], .big);
@@ -56,13 +67,15 @@ pub const Reader = struct {
         }
 
         const msgbuf = try self.allocator.dupe(u8, self.buf[self.start .. self.cursor + buflength]);
-        self.cursor += msglength;
+        self.cursor += buflength;
 
-        self.start = self.end;
+        std.debug.assert(self.cursor <= self.end);
+
+        self.start = self.cursor;
 
         std.debug.print("\nmsgtype: {c}\nmsglength: {d}\nmsgbuf: {s}\n", .{ msgtype, msglength, msgbuf });
 
-        return Message.init(msgbuf, self.allocator);
+        return Message.init(@ptrCast(msgbuf));
     }
 
     pub fn ensureCapacity(self: *Reader, nreq: usize) !void {

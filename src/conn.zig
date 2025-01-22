@@ -13,8 +13,10 @@ pub const Conn = struct {
     allocator: Allocator,
     reader: Reader,
     writer: Writer,
-
+    opts: Opts,
     scramclient: ?ScramClient = undefined,
+
+    const Self = @This();
 
     pub const Opts = struct {
         host: [4]u8,
@@ -42,6 +44,7 @@ pub const Conn = struct {
             .allocator = allocator,
             .reader = reader,
             .writer = writer,
+            .opts = opts,
         };
     }
 
@@ -54,14 +57,15 @@ pub const Conn = struct {
 
         try conn.auth();
 
+        _ = try conn.reader.read();
+
         return conn;
     }
 
     fn auth(
-        self: *Conn,
+        self: *Self,
     ) anyerror!void {
         var msg = try self.reader.read();
-        defer msg.deinit();
 
         var reader = msg.reader();
 
@@ -77,21 +81,29 @@ pub const Conn = struct {
         const authreq = try reader.readInt32();
 
         switch (authreq) {
-            0 => return,
             10 => {
                 var selectedmechanism: ?[]const u8 = null;
                 while (reader.readStringOptional()) |m| {
-                    if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256-PLUS")) {
-                        selectedmechanism = m;
-                    } else if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256") and selectedmechanism == null) {
+                    // we are not going to support channel-binding for now.
+                    if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256")) {
                         selectedmechanism = m;
                     }
                 }
-                return self.auth_sasl(selectedmechanism.?);
+                if (selectedmechanism == null) {
+                    return error.NoSupportedScramMechanismFound;
+                }
+                try self.auth_sasl(selectedmechanism.?);
+                return self.auth();
             },
             11 => {
+                const data = try reader.readAllRemaining();
+                try self.auth_sasl_continue(self.opts.password, data);
+                return self.auth();
+            },
+            12 => {
                 const res = try reader.readAllRemaining();
-                try self.scramclient.?.handle_serverfirstmessage(res);
+                try self.scramclient.?.handle_serverfinalmessage(res);
+                return;
             },
             else => {
                 std.debug.print("unimplemented authreq: {d}", .{authreq});
@@ -100,26 +112,34 @@ pub const Conn = struct {
         }
     }
 
-    fn auth_sasl(self: *Conn, mechanism: []const u8) anyerror!void {
+    fn auth_sasl_continue(self: *Self, password: []const u8, data: []const u8) anyerror!void {
+        try self.scramclient.?.handle_serverfirstmessage(data);
+
+        const clientfinalmessage = try self.scramclient.?.build_clientfinalmessage(password);
+
+        try self.writer.writeMsgStart('p');
+        try self.writer.write(clientfinalmessage);
+        try self.writer.writeMsgEnd();
+        try self.writer.flush();
+    }
+
+    fn auth_sasl(self: *Self, mechanism: []const u8) anyerror!void {
         self.scramclient = try ScramClient.init(mechanism, self.allocator);
         errdefer self.scramclient.?.deinit();
 
         {
-            const sc = self.scramclient.?;
+            const clientfirstmessage = try self.scramclient.?.build_clientfirstmessage();
 
             try self.writer.writeMsgStart('p');
             try self.writer.writeString(mechanism);
-            try self.writer.writeInt(i32, @intCast(sc.clientfirstmessage.len));
-            try self.writer.write(sc.clientfirstmessage);
-
+            try self.writer.writeInt(i32, @intCast(clientfirstmessage.len));
+            try self.writer.write(clientfirstmessage);
             try self.writer.writeMsgEnd();
             try self.writer.flush();
         }
-
-        try self.auth();
     }
 
-    pub fn close(self: *Conn) void {
+    pub fn close(self: *Self) void {
         self.stream.close();
         self.reader.deinit();
         self.writer.deinit();

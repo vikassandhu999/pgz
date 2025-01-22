@@ -3,15 +3,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const Message = struct {
-    buf: []u8,
-    allocator: Allocator,
+    buf: []const u8,
 
-    pub fn init(buf: []u8, allocator: Allocator) !Message {
-        return .{ .buf = buf, .allocator = allocator };
-    }
-
-    pub fn deinit(self: *Message) void {
-        self.allocator.free(self.buf);
+    pub fn init(buf: []const u8) !Message {
+        return .{ .buf = buf };
     }
 
     pub fn reader(self: *const Message) MsgReader {
@@ -26,9 +21,9 @@ pub const Message = struct {
 
 pub const MsgReader = struct {
     cursor: usize,
-    buf: []u8,
+    buf: []const u8,
 
-    pub fn init(buf: []u8) MsgReader {
+    pub fn init(buf: []const u8) MsgReader {
         return .{ .cursor = 0, .buf = buf };
     }
 

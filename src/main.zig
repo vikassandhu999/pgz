@@ -9,9 +9,9 @@ pub fn main() !void {
     const opts = Conn.Opts{
         .host = [4]u8{ 127, 0, 0, 1 },
         .port = 5432,
-        .database = "xobizz",
-        .user = "admin",
-        .password = "asdfasdf",
+        .database = "postgres",
+        .user = "user",
+        .password = "pass",
     };
 
     var conn = try Conn.open(opts, allocator);
