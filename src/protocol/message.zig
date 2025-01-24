@@ -28,22 +28,22 @@ pub const MsgReader = struct {
     }
 
     pub fn readByte(self: *MsgReader) !u8 {
-        if (self.cursor + 1 >= self.buf.len) return error.NoMoreData;
+        if (self.cursor + 1 > self.buf.len) return error.NoMoreData;
         const byte = self.buf[self.cursor];
         self.cursor += 1;
         return byte;
     }
 
-    pub fn readInt16(self: *MsgReader) !u16 {
-        if (self.cursor + 2 >= self.buf.len) return error.NoMoreData;
-        const val = std.mem.readInt(u16, self.buf[self.cursor..][0..2], .big);
+    pub fn readInt16(self: *MsgReader) !i16 {
+        if (self.cursor + 2 > self.buf.len) return error.NoMoreData;
+        const val = std.mem.readInt(i16, self.buf[self.cursor..][0..2], .big);
         self.cursor += 2;
         return val;
     }
 
-    pub fn readInt32(self: *MsgReader) !u32 {
-        if (self.cursor + 4 >= self.buf.len) return error.NoMoreData;
-        const val = std.mem.readInt(u32, self.buf[self.cursor..][0..4], .big);
+    pub fn readInt32(self: *MsgReader) !i32 {
+        if (self.cursor + 4 > self.buf.len) return error.NoMoreData;
+        const val = std.mem.readInt(i32, self.buf[self.cursor..][0..4], .big);
         self.cursor += 4;
         return val;
     }
@@ -56,12 +56,12 @@ pub const MsgReader = struct {
     }
 
     pub fn readString(self: *MsgReader) ![]const u8 {
-        if (self.cursor + 1 >= self.buf.len) return error.NoMoreData;
+        if (self.cursor + 1 > self.buf.len) return error.NoMoreData;
         return self.readStringOptional() orelse return error.NotAString;
     }
 
     pub fn readAllRemaining(self: *MsgReader) ![]const u8 {
-        if (self.cursor + 1 >= self.buf.len) return error.NoMoreData;
+        if (self.cursor + 1 > self.buf.len) return error.NoMoreData;
         const val = self.buf[self.cursor..];
         self.cursor = self.buf.len;
         return val;

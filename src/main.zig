@@ -9,12 +9,14 @@ pub fn main() !void {
     const opts = Conn.Opts{
         .host = [4]u8{ 127, 0, 0, 1 },
         .port = 5432,
-        .database = "postgres",
-        .user = "user",
-        .password = "pass",
+        .database = "xobizz_admin",
+        .user = "admin",
+        .password = "L2KjxOH9al",
     };
 
     var conn = try Conn.open(opts, allocator);
+
+    try conn.exec();
 
     defer conn.close();
 }
