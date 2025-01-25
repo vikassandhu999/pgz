@@ -9,11 +9,11 @@ pub const Message = struct {
         return .{ .buf = buf };
     }
 
-    pub fn reader(self: *const Message) MsgReader {
+    pub fn reader(self: Message) MsgReader {
         return MsgReader.init(self.buf);
     }
 
-    pub fn msgtype(self: *Message) u8 {
+    pub fn msgtype(self: Message) u8 {
         std.debug.assert(self.buf.len >= 1);
         return self.buf[0];
     }
@@ -32,6 +32,13 @@ pub const MsgReader = struct {
         const byte = self.buf[self.cursor];
         self.cursor += 1;
         return byte;
+    }
+
+    pub fn readBytes(self: *MsgReader, n: usize) ![]const u8 {
+        if (self.cursor + n > self.buf.len) return error.NoMoreData;
+        const bytes = self.buf[self.cursor .. self.cursor + n];
+        self.cursor += n;
+        return bytes;
     }
 
     pub fn readInt16(self: *MsgReader) !i16 {

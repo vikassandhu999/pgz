@@ -17,8 +17,6 @@ pub const Conn = struct {
     writer: Writer,
     opts: Opts,
     scramclient: ?ScramClient = undefined,
-    _authcomplete: bool = false,
-    _readyforquery: bool = false,
 
     const Self = @This();
 
@@ -75,20 +73,12 @@ pub const Conn = struct {
         return conn;
     }
 
-    pub fn exec(self: *Self) !void {
+    pub fn query(self: *Self, sql: []const u8) !Rows {
         try self.writer.writeMsgStart('Q');
-        // try self.writer.writeString("SELECT * from workouts;");
-        try self.writer.writeString("select email from users;");
-        //try self.writer.writeString("SELECT 1 + 1");
+        try self.writer.writeString(sql);
         try self.writer.writeMsgEnd();
         try self.writer.flush();
-
-        const msg = try self.reader.read();
-
-        var rows = try Rows.init(msg, self.allocator);
-        try rows.print();
-
-        try self.ready_forquery();
+        return Rows.init(&self.reader, self.allocator);
     }
 
     fn ready_forquery(self: *Self) !void {
@@ -106,7 +96,7 @@ pub const Conn = struct {
         self: *Self,
     ) anyerror!void {
         while (true) {
-            var msg = try self.reader.read();
+            const msg = try self.reader.read();
             var reader = msg.reader();
 
             switch (try reader.readByte()) {
@@ -121,7 +111,6 @@ pub const Conn = struct {
 
             switch (req) {
                 @intFromEnum(Authentication.Ok) => {
-                    self._authcomplete = true;
                     return;
                 },
                 @intFromEnum(Authentication.SASL) => {
@@ -202,8 +191,8 @@ pub const Conn = struct {
         self.stream.close();
         self.reader.deinit();
         self.writer.deinit();
-        if (self.scramclient != null) {
-            self.scramclient.?.deinit();
+        if (self.scramclient) |*sc| {
+            sc.deinit();
         }
         std.debug.print("Connection closed\n", .{});
     }

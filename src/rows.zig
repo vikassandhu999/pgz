@@ -2,6 +2,8 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const Message = @import("./protocol/message.zig").Message;
+const Reader = @import("./reader.zig").Reader;
+const traits = @import("./traits.zig");
 
 const FieldDescription = struct {
     name: []const u8,
@@ -15,37 +17,25 @@ const FieldDescription = struct {
 
 pub const Rows = struct {
     fields: []FieldDescription = undefined,
+    reader: *Reader,
     _a: Allocator,
+    _state: State = .ReadingRowDescription,
+    _reading: ?Message = null,
+
+    const State = enum {
+        ReadingRowDescription,
+        ReadingRows,
+        Completed,
+        Errored,
+    };
 
     const Self = @This();
 
-    pub fn init(msg: Message, allocator: Allocator) !Rows {
-        var rows = Rows{
+    pub fn init(reader: *Reader, allocator: Allocator) !Rows {
+        return .{
             ._a = allocator,
+            .reader = reader,
         };
-        var varmsg = msg;
-        var reader = varmsg.reader();
-
-        _ = try reader.readByte();
-        _ = try reader.readInt32();
-
-        const fieldscount: usize = @intCast(try reader.readInt16());
-
-        if (fieldscount != 0) {
-            rows.fields = try allocator.alloc(FieldDescription, fieldscount);
-        }
-
-        for (0..fieldscount) |i| {
-            rows.fields[i].name = try reader.readString();
-            rows.fields[i].tableoid = try reader.readInt32();
-            rows.fields[i].tableattributenumber = try reader.readInt16();
-            rows.fields[i].datatypeoid = try reader.readInt32();
-            rows.fields[i].datatypesize = try reader.readInt16();
-            rows.fields[i].typemodifier = try reader.readInt32();
-            rows.fields[i].format = try reader.readInt16();
-        }
-
-        return rows;
     }
 
     pub fn deinit(self: *Self) void {
@@ -54,45 +44,159 @@ pub const Rows = struct {
         }
     }
 
-    pub fn print(self: *Self) !void {
-        const writer = std.debug;
+    pub fn hasnext(self: *Self) !bool {
+        return switch (self._state) {
+            .ReadingRowDescription => {
+                try self.readfielddescription();
+                self._state = .ReadingRows;
+                return self.hasnext();
+            },
+            .ReadingRows => {
+                if (self._reading != null) {
+                    return true;
+                }
+                const rowmsg = try self.reader.read();
+                //TODO: handle all cases for query commands
+                switch (rowmsg.msgtype()) {
+                    'D' => {
+                        self._reading = rowmsg;
+                        self._state = .ReadingRows;
+                        return true;
+                    },
+                    'C' => {
+                        self._state = .Completed;
+                        return false;
+                    },
+                    'E' => {
+                        self._state = .Errored;
+                        return false;
+                    },
+                    else => {
+                        self.deinit();
+                        return error.UnexpectedDBMessage;
+                    },
+                }
+            },
+            .Completed => return false,
+            .Errored => return false,
+        };
+    }
 
-        writer.print("Row Description ({d} columns):\n", .{self.fields.len});
+    pub fn read(self: *Self, allocator: Allocator, args: anytype) !void {
+        const ArgsType = @TypeOf(args);
+        const ArgsT = @typeInfo(ArgsType);
 
-        if (self.fields.len == 0) {
-            writer.print("No columns defined\n", .{});
-            return;
+        comptime {
+            switch (ArgsT) {
+                .Struct => |s| if (!s.is_tuple) {
+                    @compileError("Expected tuple type, found struct '" ++ @typeName(ArgsType) ++ "'");
+                },
+                else => @compileError("Expected tuple type, found '" ++ @typeName(ArgsType) ++ "'"),
+            }
+
+            for (@typeInfo(ArgsType).Struct.fields, 0..) |field, idx| {
+                const FieldType = field.type;
+                const field_info = @typeInfo(FieldType);
+
+                if (field_info != .Pointer) {
+                    @compileError("Tuple element " ++ std.fmt.comptimePrint("{}", .{idx}) ++
+                        " must be pointer type, found '" ++ @typeName(FieldType) ++ "'");
+                }
+            }
         }
 
-        // Table header
-        writer.print(
-            \\┌──────────────┬───────────┬────────────┬────────────┬──────────────┬──────────────┬────────┐
-            \\│ Name         │ Table OID │ Column #   │ Type ID    │ Type Length  │ Attr Modifier│ Format │
-            \\├──────────────┼───────────┼────────────┼────────────┼──────────────┼──────────────┼────────┤
-        , .{});
+        if (!try self.hasnext()) {
+            return error.NoMorRows;
+        }
+        const msg = self._reading orelse unreachable;
 
-        // Table rows
-        for (self.fields) |col| {
-            writer.print(
-                \\
-                \\│ {s:<12} │ {d:>9} │ {d:>10} │ {d:>10} │ {d:>12} │ {d:>12} │ {d:>6} │
-                \\├──────────────┼───────────┼────────────┼────────────┼──────────────┼──────────────┼────────┤
-            , .{
-                col.name,
-                col.tableoid,
-                col.tableattributenumber,
-                col.datatypeoid,
-                col.datatypesize,
-                col.typemodifier,
-                col.format,
-            });
+        var rowreader = msg.reader();
+
+        const msgtype = try rowreader.readByte();
+        // hasnext should only return true if self._reading is a DataRow message.
+        std.debug.assert(msgtype == 'D');
+
+        // skip length.
+        _ = try rowreader.readInt32();
+
+        const colscount: usize = @intCast(try rowreader.readInt16());
+
+        const fields = comptime ArgsT.Struct.fields;
+        const argsCount = comptime fields.len;
+
+        //TODO: decide if we want to return error for lesser or more number of args than fields.
+        inline for (0..argsCount) |i| {
+            if (i >= colscount) break;
+            const colsize = try rowreader.readInt32();
+            switch (colsize) {
+                -1 => {
+                    // TODO: decide what to do with NULL.
+                },
+                0 => { // not data we can safely ignore.
+                },
+                else => {
+                    const field = @field(args, fields[i].name);
+                    const Field = @typeInfo(fields[i].type).Pointer.child;
+                    const T = @typeInfo(Field);
+
+                    const bytes = try rowreader.readBytes(@intCast(colsize));
+
+                    switch (T) {
+                        .Int, .ComptimeInt => {
+                            field.* = try std.mem.readInt(Field, bytes, .big);
+                        },
+                        .Float, .ComptimeFloat => {
+                            field.* = try std.fmt.parseFloat(Field, bytes);
+                        },
+                        .Struct => {
+                            if (comptime traits.isParserType(Field)) {
+                                const x: Field = try Field.PgType.parse(allocator, bytes);
+                                field.* = x;
+                            } else {
+                                @compileError("Struct does not implement PgParser.parse");
+                            }
+                        },
+                        .Pointer => |ptr| {
+                            if (comptime ptr.child != u8) {
+                                @compileError("Struct does not implement PgParser.parse");
+                            }
+                            field.* = bytes;
+                        },
+                        else => {
+                            @compileError("Unsupported type " ++ @typeName(T));
+                        },
+                    }
+                },
+            }
+        }
+        self._reading = null;
+        std.debug.print("finished reading row", .{});
+    }
+
+    fn readfielddescription(self: *Self) !void {
+        const msg = try self.reader.read();
+
+        var msgreader = msg.reader();
+
+        const msgtype = try msgreader.readByte();
+        std.debug.assert(msgtype == 'T');
+        // skip length.
+        _ = try msgreader.readInt32();
+
+        const fieldscount: usize = @intCast(try msgreader.readInt16());
+
+        if (fieldscount != 0) {
+            self.fields = try self._a.alloc(FieldDescription, fieldscount);
         }
 
-        // Replace last divider with footer
-        writer.print(
-            \\
-            \\└──────────────┴───────────┴────────────┴────────────┴──────────────┴──────────────┴────────┘
-            \\
-        , .{});
+        for (0..fieldscount) |i| {
+            self.fields[i].name = try self._a.dupe(u8, try msgreader.readString());
+            self.fields[i].tableoid = try msgreader.readInt32();
+            self.fields[i].tableattributenumber = try msgreader.readInt16();
+            self.fields[i].datatypeoid = try msgreader.readInt32();
+            self.fields[i].datatypesize = try msgreader.readInt16();
+            self.fields[i].typemodifier = try msgreader.readInt32();
+            self.fields[i].format = try msgreader.readInt16();
+        }
     }
 };
