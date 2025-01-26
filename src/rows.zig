@@ -5,7 +5,7 @@ const Message = @import("./protocol/message.zig").Message;
 const Reader = @import("./reader.zig").Reader;
 const traits = @import("./traits.zig");
 
-const FieldDescription = struct {
+pub const FieldDescription = struct {
     name: []const u8,
     tableoid: i32,
     tableattributenumber: i16,
@@ -121,26 +121,28 @@ pub const Rows = struct {
 
         const colscount: usize = @intCast(try rowreader.readInt16());
 
+        // fields description count should be same as column count in any given row for this query.
+        std.debug.assert(colscount != self.fields.len);
+
         const fields = comptime ArgsT.Struct.fields;
         const argsCount = comptime fields.len;
 
         //TODO: decide if we want to return error for lesser or more number of args than fields.
         inline for (0..argsCount) |i| {
             if (i >= colscount) break;
+
+            const field = @field(args, fields[i].name);
+            const Field = @typeInfo(fields[i].type).Pointer.child;
+            const T = @typeInfo(Field);
+
             const colsize = try rowreader.readInt32();
             switch (colsize) {
-                -1 => {
-                    // TODO: decide what to do with NULL.
-                },
+                -1 => {},
                 0 => { // not data we can safely ignore.
                 },
                 else => {
-                    const field = @field(args, fields[i].name);
-                    const Field = @typeInfo(fields[i].type).Pointer.child;
-                    const T = @typeInfo(Field);
-
                     const bytes = try rowreader.readBytes(@intCast(colsize));
-
+                    // TODO: add runtime strict type matching using field description.
                     switch (T) {
                         .Int, .ComptimeInt => {
                             field.* = try std.mem.readInt(Field, bytes, .big);
@@ -149,16 +151,19 @@ pub const Rows = struct {
                             field.* = try std.fmt.parseFloat(Field, bytes);
                         },
                         .Struct => {
-                            if (comptime traits.isParserType(Field)) {
-                                const x: Field = try Field.PgType.parse(allocator, bytes);
+                            if (comptime traits.isPgTypeDecoder(Field)) {
+                                const x: Field = try Field.PgType.decodeAlloc(allocator, bytes, self.fields[i]);
                                 field.* = x;
                             } else {
-                                @compileError("Struct does not implement PgParser.parse");
+                                @compileError("Struct does not implement PgType.decodeAlloc");
                             }
+                        },
+                        .Bool => {
+                            field.* = bytes[0] == 1;
                         },
                         .Pointer => |ptr| {
                             if (comptime ptr.child != u8) {
-                                @compileError("Struct does not implement PgParser.parse");
+                                @compileError("Slice only can be a u8 slice");
                             }
                             field.* = bytes;
                         },
@@ -170,7 +175,6 @@ pub const Rows = struct {
             }
         }
         self._reading = null;
-        std.debug.print("finished reading row", .{});
     }
 
     fn readfielddescription(self: *Self) !void {

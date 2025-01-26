@@ -3,17 +3,30 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Conn = @import("./conn.zig").Conn;
+const FieldDescription = @import("./rows.zig").FieldDescription;
 
 const Email = struct {
-    email: []u8,
+    email: []const u8,
+    _a: Allocator,
 
     const Self = @This();
 
+    pub fn init(allocator: Allocator, email: []const u8) Email {
+        return .{
+            ._a = allocator,
+            .email = email,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.email.len > 0) {
+            self._a.free(self.email);
+        }
+    }
+
     pub const PgType = struct {
-        pub fn parse(allocator: Allocator, data: []const u8) !Self {
-            var res: Email = undefined;
-            res.email = try allocator.dupe(u8, data);
-            return res;
+        pub fn decodeAlloc(allocator: Allocator, data: []const u8, _: FieldDescription) !Self {
+            return Email.init(allocator, try allocator.dupe(u8, data));
         }
     };
 };
@@ -21,6 +34,23 @@ const Email = struct {
 const User = struct {
     id: []const u8 = undefined,
     email: Email,
+    _a: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) !User {
+        return .{
+            ._a = allocator,
+            .email = Email.init(allocator, undefined),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.id.len > 0) {
+            self._a.free(self.id);
+        }
+        self.email.deinit();
+    }
 };
 
 pub fn main() !void {
@@ -36,10 +66,17 @@ pub fn main() !void {
 
     var conn = try Conn.open(opts, allocator);
 
-    var rows = try conn.query("select id,email from users;");
+    var rows = try conn.query("select id,email from users where 1=1;");
     defer rows.deinit();
 
     var users: std.ArrayList(User) = std.ArrayList(User).init(allocator);
+    defer {
+        for (users.items) |*item| {
+            item.deinit();
+        }
+        users.deinit();
+    }
+
     while (try rows.hasnext()) {
         const user = try users.addOne();
         try rows.read(users.allocator, .{ &user.id, &user.email });
