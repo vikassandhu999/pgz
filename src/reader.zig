@@ -2,7 +2,10 @@ const std = @import("std");
 
 const Stream = std.net.Stream;
 const Allocator = std.mem.Allocator;
-const Message = @import("./protocol/message.zig").Message;
+
+const proto3 = @import("./proto3/proto3.zig");
+
+const Message = proto3.Message;
 
 pub const Reader = struct {
     stream: Stream,

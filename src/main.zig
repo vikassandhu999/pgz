@@ -28,6 +28,8 @@ const Email = struct {
         pub fn decodeAlloc(allocator: Allocator, data: []const u8, _: FieldDescription) !Self {
             return Email.init(allocator, try allocator.dupe(u8, data));
         }
+
+        pub fn encode() ![]const u8 {}
     };
 };
 
@@ -64,9 +66,9 @@ pub fn main() !void {
         .password = "L2KjxOH9al",
     };
 
-    var conn = try Conn.open(opts, allocator);
+    var conn = try Conn.connect(opts, allocator);
 
-    var rows = try conn.query("select id,email from users where 1=1;");
+    var rows = try conn.query("select id,emaildd from users where 1=1;");
     defer rows.deinit();
 
     var users: std.ArrayList(User) = std.ArrayList(User).init(allocator);
@@ -86,5 +88,5 @@ pub fn main() !void {
         std.debug.print("\n\nuser {d} {d} {s}\n\n", .{ i, user.id, user.email.email });
     }
 
-    defer conn.close();
+    defer conn.disconnect();
 }

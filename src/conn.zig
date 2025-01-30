@@ -2,12 +2,18 @@ const std = @import("std");
 const Stream = std.net.Stream;
 const Allocator = std.mem.Allocator;
 
+const proto3 = @import("./proto3/proto3.zig");
+
+const PostgresError = proto3.PostgresError;
+const StartupMessage = proto3.StartupMessage;
+const SASLInitialResponse = proto3.SASLInitialResponse;
+const SASLResponse = proto3.SASLResponse;
+const Query = proto3.Query;
+const ErrorResposne = proto3.ErrorResponse;
+
 const Reader = @import("./reader.zig").Reader;
-const Msg = @import("./reader.zig").Msg;
 const Writer = @import("./writer.zig").Writer;
-const StartupMessage = @import("./protocol/startup_message.zig").StartupMessage;
 const ScramClient = @import("./auth_scram.zig").ScramClient;
-const Authentication = @import("./auth_scram.zig").Authentication;
 const Rows = @import("./rows.zig").Rows;
 
 pub const Conn = struct {
@@ -17,6 +23,8 @@ pub const Conn = struct {
     writer: Writer,
     opts: Opts,
     scramclient: ?ScramClient = undefined,
+
+    connectionerror: ?ErrorResposne = undefined,
 
     const Self = @This();
 
@@ -29,7 +37,7 @@ pub const Conn = struct {
         params: ?std.StringHashMap([]const u8) = null,
     };
 
-    pub fn init(opts: Opts, allocator: Allocator) !Conn {
+    fn init(opts: Opts, allocator: Allocator) !Conn {
         const address = std.net.Address.initIp4(opts.host, opts.port);
 
         const stream = try std.net.tcpConnectToAddress(address);
@@ -50,10 +58,10 @@ pub const Conn = struct {
         };
     }
 
-    pub fn open(opts: Opts, allocator: Allocator) anyerror!Conn {
+    pub fn connect(opts: Opts, allocator: Allocator) anyerror!Conn {
         var conn = try Conn.init(opts, allocator);
 
-        try conn.send_startupmessage();
+        try conn.sendStartupMessage();
 
         try conn.authenticate();
 
@@ -73,121 +81,7 @@ pub const Conn = struct {
         return conn;
     }
 
-    pub fn query(self: *Self, sql: []const u8) !Rows {
-        try self.writer.writeMsgStart('Q');
-        try self.writer.writeString(sql);
-        try self.writer.writeMsgEnd();
-        try self.writer.flush();
-        return Rows.init(&self.reader, self.allocator);
-    }
-
-    fn ready_forquery(self: *Self) !void {
-        while (true) {
-            var msg = try self.reader.read();
-            switch (msg.msgtype()) {
-                'Z' => return,
-                'E' => return error.DatabaseError,
-                else => return error.UnexpectedMessage,
-            }
-        }
-    }
-
-    fn authenticate(
-        self: *Self,
-    ) anyerror!void {
-        while (true) {
-            const msg = try self.reader.read();
-            var reader = msg.reader();
-
-            switch (try reader.readByte()) {
-                'R' => {},
-                'E' => return error.DBError,
-                else => return,
-            }
-            // skips 4 bytes for message length;
-            _ = try reader.readInt32();
-
-            const req = try reader.readInt32();
-
-            switch (req) {
-                @intFromEnum(Authentication.Ok) => {
-                    return;
-                },
-                @intFromEnum(Authentication.SASL) => {
-                    var selectedmechanism: ?[]const u8 = null;
-                    while (reader.readStringOptional()) |m| {
-                        // we are not going to support channel-binding for now.
-                        if (std.ascii.eqlIgnoreCase(m, "SCRAM-SHA-256")) {
-                            selectedmechanism = m;
-                        }
-                    }
-                    if (selectedmechanism == null) {
-                        return error.NoSupportedScramMechanismFound;
-                    }
-                    try self.auth_sasl(selectedmechanism.?);
-                },
-                @intFromEnum(Authentication.SASLContinue) => {
-                    const data = try reader.readAllRemaining();
-                    try self.auth_saslcontinue(self.opts.password, data);
-                },
-                @intFromEnum(Authentication.SASLFinal) => {
-                    const data = try reader.readAllRemaining();
-                    try self.auth_saslfinal(data);
-                },
-                else => {
-                    std.debug.print("unimplemented authreq: {d}", .{req});
-                    return error.UnImplementedAuthReq;
-                },
-            }
-        }
-    }
-
-    fn send_startupmessage(self: *Self) !void {
-        try self.writer.writeMsgStart(0);
-        try self.writer.writeInt(u32, 196608);
-        try self.writer.write("user");
-        try self.writer.writeByte(0);
-        try self.writer.write(self.opts.user);
-        try self.writer.writeByte(0);
-        try self.writer.write("database");
-        try self.writer.writeByte(0);
-        try self.writer.write(self.opts.database);
-        try self.writer.writeByte(0);
-        try self.writer.writeByte(0);
-        try self.writer.writeMsgEnd();
-        try self.writer.flush();
-    }
-
-    fn auth_sasl(self: *Self, mechanism: []const u8) anyerror!void {
-        self.scramclient = try ScramClient.init(mechanism, self.allocator);
-        errdefer self.scramclient.?.deinit();
-
-        const clientfirst = try self.scramclient.?.create_clientfirstmessage();
-
-        try self.writer.writeMsgStart('p');
-        try self.writer.writeString(mechanism);
-        try self.writer.writeInt(i32, @intCast(clientfirst.len));
-        try self.writer.write(clientfirst);
-        try self.writer.writeMsgEnd();
-        try self.writer.flush();
-    }
-
-    fn auth_saslcontinue(self: *Self, password: []const u8, data: []const u8) anyerror!void {
-        try self.scramclient.?.handle_serverfirstmessage(data);
-
-        const clientfinal = try self.scramclient.?.create_clientfinalmessage(password);
-
-        try self.writer.writeMsgStart('p');
-        try self.writer.write(clientfinal);
-        try self.writer.writeMsgEnd();
-        try self.writer.flush();
-    }
-
-    fn auth_saslfinal(self: *Self, data: []const u8) anyerror!void {
-        try self.scramclient.?.verify_severfinalmessage(data);
-    }
-
-    pub fn close(self: *Self) void {
+    pub fn disconnect(self: *Self) void {
         self.stream.close();
         self.reader.deinit();
         self.writer.deinit();
@@ -195,5 +89,84 @@ pub const Conn = struct {
             sc.deinit();
         }
         std.debug.print("Connection closed\n", .{});
+    }
+
+    fn authenticate(
+        self: *Self,
+    ) anyerror!void {
+        while (true) {
+            const msg = try self.reader.read();
+
+            switch (msg.msgtype()) {
+                'R' => {},
+                'E' => {
+                    self.connectionerror = try proto3.ErrorResponse.decode(msg);
+                    return PostgresError.ConnectionError;
+                },
+                else => return PostgresError.ExpectedRequest,
+            }
+
+            const autentication = try proto3.Authentication.decode(msg);
+
+            switch (autentication) {
+                .Ok => {
+                    return;
+                },
+                .SASL => |req| {
+                    try self.authSasl(req.mechanism);
+                },
+                .SASLContinue => |req| {
+                    try self.authSaslContinue(self.opts.password, req.data);
+                },
+                .SASLFinal => |req| {
+                    try self.authSaslFinal(req.data);
+                },
+                .Unknown => {
+                    return PostgresError.UnimplementedAuthRequest;
+                },
+            }
+        }
+    }
+
+    pub fn query(self: *Self, sql: []const u8) !Rows {
+        const querymsg = Query.init(sql);
+        try self.writer.writeToStream(querymsg);
+
+        return Rows.init(&self.reader, self.allocator);
+    }
+
+    fn sendStartupMessage(self: *Self) !void {
+        const msg = StartupMessage.init(self.opts.user, self.opts.database);
+        try self.writer.writeToStream(msg);
+    }
+
+    fn authSasl(self: *Self, mechanism: []const u8) anyerror!void {
+        self.scramclient = try ScramClient.init(mechanism, self.allocator);
+        errdefer self.scramclient.?.deinit();
+
+        const clientfirst = try self.scramclient.?.createClientFirstMessage();
+
+        const initialresponse = SASLInitialResponse.init(mechanism, clientfirst);
+
+        try self.writer.writeToStream(initialresponse);
+    }
+
+    fn authSaslContinue(self: *Self, password: []const u8, data: []const u8) anyerror!void {
+        try self.scramclient.?.handleServerFirstMessage(data);
+
+        const clientfinal = try self.scramclient.?.createClientFinalMessage(password);
+
+        const response = SASLResponse.init(clientfinal);
+
+        try self.writer.writeToStream(response);
+    }
+
+    fn authSaslFinal(self: *Self, data: []const u8) anyerror!void {
+        try self.scramclient.?.verifySeverFinalMessage(data);
+    }
+
+    // TODO: clone and return error message, user's allocator will own the memory.
+    pub fn errorAlloc(self: *Self, _: Allocator) !?ErrorResposne {
+        return self.connectionerror;
     }
 };

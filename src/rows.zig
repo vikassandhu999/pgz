@@ -1,7 +1,11 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Message = @import("./protocol/message.zig").Message;
+
+const proto3 = @import("./proto3/proto3.zig");
+const ErrorResponse = proto3.ErrorResponse;
+const Message = proto3.Message;
+
 const Reader = @import("./reader.zig").Reader;
 const traits = @import("./traits.zig");
 
@@ -21,6 +25,7 @@ pub const Rows = struct {
     _a: Allocator,
     _state: State = .ReadingRowDescription,
     _reading: ?Message = null,
+    queryerror: ?ErrorResponse = null,
 
     const State = enum {
         ReadingRowDescription,
@@ -47,7 +52,7 @@ pub const Rows = struct {
     pub fn hasnext(self: *Self) !bool {
         return switch (self._state) {
             .ReadingRowDescription => {
-                try self.readfielddescription();
+                try self.read_fielddescription();
                 self._state = .ReadingRows;
                 return self.hasnext();
             },
@@ -68,6 +73,8 @@ pub const Rows = struct {
                         return false;
                     },
                     'E' => {
+                        self.queryerror = try ErrorResponse.decode(rowmsg);
+                        std.debug.print("query error: {any}", .{self.queryerror});
                         self._state = .Errored;
                         return false;
                     },
@@ -177,12 +184,13 @@ pub const Rows = struct {
         self._reading = null;
     }
 
-    fn readfielddescription(self: *Self) !void {
+    fn read_fielddescription(self: *Self) !void {
         const msg = try self.reader.read();
 
         var msgreader = msg.reader();
 
         const msgtype = try msgreader.readByte();
+
         std.debug.assert(msgtype == 'T');
         // skip length.
         _ = try msgreader.readInt32();

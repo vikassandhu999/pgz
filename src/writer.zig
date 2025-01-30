@@ -1,4 +1,5 @@
 const std = @import("std");
+const traits = @import("./traits.zig");
 
 const Stream = std.net.Stream;
 const Allocator = std.mem.Allocator;
@@ -38,10 +39,6 @@ pub const Writer = struct {
     pub fn writeMsgEnd(self: *Self) !void {
         std.debug.assert(self.cursor > 4);
         std.mem.writeInt(u32, self.buf[self.msgstart..][0..4], @intCast(self.cursor - self.msgstart), .big);
-    }
-
-    pub fn flush(self: *Self) Stream.WriteError!void {
-        try self.stream.writeAll(self.buf[0..self.cursor]);
     }
 
     pub fn writeInt(self: *Self, comptime T: type, int: T) !void {
@@ -98,5 +95,29 @@ pub const Writer = struct {
         }
         self.buf = try self.allocator.realloc(self.buf, newlen);
         return;
+    }
+
+    pub fn writeToStream(self: *Self, msg: anytype) anyerror!void {
+        const MsgType = @TypeOf(msg);
+        const MsgTypeInfo = @typeInfo(MsgType);
+
+        comptime {
+            switch (MsgTypeInfo) {
+                .Struct => |s| if (s.is_tuple) {
+                    @compileError("Expected struct, enum or union, found tuple '" ++ @typeName(MsgType) ++ "'");
+                },
+                .Enum => {},
+                .Union => {},
+                else => @compileError("Expected struct, enum or union, found '" ++ @typeName(MsgType) ++ "'"),
+            }
+        }
+
+        if (comptime traits.hasInternalEncoder(MsgType)) {
+            try msg.encode(self);
+            try self.stream.writeAll(self.buf[0..self.cursor]);
+            return;
+        }
+
+        @compileError("Expected struct, enum or union with decode method.");
     }
 };

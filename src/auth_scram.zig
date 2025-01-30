@@ -5,13 +5,6 @@ const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const pbkdf2 = std.crypto.pwhash.pbkdf2;
 
-pub const Authentication = enum(u32) {
-    Ok = 0,
-    SASL = 10,
-    SASLContinue = 11,
-    SASLFinal = 12,
-};
-
 pub const ScramClient = struct {
     mechanism: []const u8,
     clientnonce: []u8 = undefined,
@@ -56,7 +49,7 @@ pub const ScramClient = struct {
         }
     }
 
-    pub fn create_clientfirstmessage(self: *Self) ![]const u8 {
+    pub fn createClientFirstMessage(self: *Self) ![]const u8 {
         self.clientnonce = try self._a.alloc(u8, 18);
         std.crypto.random.bytes(self.clientnonce);
 
@@ -69,7 +62,7 @@ pub const ScramClient = struct {
         return self.clientfirst;
     }
 
-    pub fn handle_serverfirstmessage(self: *Self, data: []const u8) !void {
+    pub fn handleServerFirstMessage(self: *Self, data: []const u8) !void {
         self.serverfirst = try self._a.dupe(u8, data);
 
         var parts = std.mem.splitSequence(u8, data, ",");
@@ -102,7 +95,7 @@ pub const ScramClient = struct {
     }
 
     // reference https://datatracker.ietf.org/doc/html/rfc5802#section-3
-    pub fn create_clientfinalmessage(self: *Self, password: []const u8) ![]u8 {
+    pub fn createClientFinalMessage(self: *Self, password: []const u8) ![]u8 {
         self.saltedpassword = try self._a.alloc(u8, 32);
         try pbkdf2(self.saltedpassword, password, self.salt, self.iterations, HmacSha256);
 
@@ -132,7 +125,7 @@ pub const ScramClient = struct {
         return @ptrCast(self.clientfinal);
     }
 
-    pub fn verify_severfinalmessage(self: *Self, data: []const u8) !void {
+    pub fn verifySeverFinalMessage(self: *Self, data: []const u8) !void {
         if (!std.mem.startsWith(u8, data, "v=")) {
             return error.InvalidServerFirstMessage;
         }
