@@ -63,17 +63,17 @@ pub const Authentication = union(enum) {
         switch (try reader.readInt32()) {
             0 => return .{ .Ok = {} },
             10 => {
-                var selected: ?[]const u8 = null;
+                var selectedmech: ?[]const u8 = null;
                 while (reader.readStringOptional()) |mechanism| {
                     // we are not going to support channel-binding for now.
                     if (std.ascii.eqlIgnoreCase(mechanism, "SCRAM-SHA-256")) {
-                        selected = mechanism;
+                        selectedmech = mechanism;
                     }
                 }
-                if (selected == null) {
+                if (selectedmech == null) {
                     return PostgresError.SCRAMMethodNotSupported;
                 }
-                return .{ .SASL = .{ .mechanism = selected.? } };
+                return .{ .SASL = .{ .mechanism = selectedmech.? } };
             },
             11 => return .{ .SASLContinue = .{ .data = try reader.readAllRemaining() } },
             12 => return .{ .SASLFinal = .{ .data = try reader.readAllRemaining() } },
@@ -133,8 +133,10 @@ pub const Query = struct {
     }
 };
 
-//TODO: make clone of message using given allocator from user when returing error for query.
-// user must own the memory. add deinit() & clone();
+pub const ErrorResponseRaw = struct {
+    msg: Message,
+};
+
 pub const ErrorResponse = struct {
     severity: []const u8 = undefined,
     severity_unlocalized: []const u8 = undefined,
@@ -155,7 +157,36 @@ pub const ErrorResponse = struct {
     line: i32 = undefined,
     routine: []const u8 = undefined,
 
-    pub fn decode(msg: Message) !ErrorResponse {
+    _a: Allocator,
+
+    pub fn deinit(self: *@This()) void {
+        const strings = [_][]u8{
+            self.severity,
+            self.severity_unlocalized,
+            self.code,
+            self.message,
+            self.detail,
+            self.hint,
+            self.internal_query,
+            self.where,
+            self.schema_name,
+            self.table_name,
+            self.column_name,
+            self.data_type_name,
+            self.constraint_name,
+            self.file,
+            self.line,
+            self.routine,
+        };
+
+        for (strings) |string| {
+            if (string.len > 0) {
+                self._a.free(string);
+            }
+        }
+    }
+
+    pub fn decodeAlloc(msg: Message, allocator: Allocator) !@This() {
         var reader = msg.reader();
 
         const msgtype = try reader.readByte();
@@ -163,7 +194,7 @@ pub const ErrorResponse = struct {
 
         _ = try reader.readInt32();
 
-        var res = ErrorResponse{};
+        var res = ErrorResponse{ ._a = allocator };
 
         while (true) {
             const k = try reader.readByte();
@@ -173,22 +204,22 @@ pub const ErrorResponse = struct {
             const str = try reader.readString();
             switch (k) {
                 'S' => {
-                    res.severity = str;
+                    res.severity = try res._a.dupe(str);
                 },
                 'V' => {
-                    res.severity_unlocalized = str;
+                    res.severity_unlocalized = try res._a.dupe(str);
                 },
                 'C' => {
-                    res.code = str;
+                    res.code = try res._a.dupe(str);
                 },
                 'M' => {
-                    res.message = str;
+                    res.message = try res._a.dupe(str);
                 },
                 'D' => {
-                    res.detail = str;
+                    res.detail = try res._a.dupe(str);
                 },
                 'H' => {
-                    res.hint = str;
+                    res.hint = try res._a.dupe(str);
                 },
                 'P' => {
                     res.position = try std.fmt.parseInt(i32, str, 10);
@@ -197,35 +228,103 @@ pub const ErrorResponse = struct {
                     res.internal_position = try std.fmt.parseInt(i32, str, 10);
                 },
                 'q' => {
-                    res.internal_query = str;
+                    res.internal_query = try res._a.dupe(str);
                 },
                 'W' => {
-                    res.where = str;
+                    res.where = try res._a.dupe(str);
                 },
                 's' => {
-                    res.schema_name = str;
+                    res.schema_name = try res._a.dupe(str);
                 },
                 't' => {
-                    res.table_name = str;
+                    res.table_name = try res._a.dupe(str);
                 },
                 'c' => {
-                    res.column_name = str;
+                    res.column_name = try res._a.dupe(str);
                 },
                 'd' => {
-                    res.data_type_name = str;
+                    res.data_type_name = try res._a.dupe(str);
                 },
                 'n' => {
-                    res.constraint_name = str;
+                    res.constraint_name = try res._a.dupe(str);
                 },
                 'F' => {
-                    res.file = str;
+                    res.file = try res._a.dupe(str);
                 },
                 'R' => {
-                    res.routine = str;
+                    res.routine = try res._a.dupe(str);
                 },
                 else => {},
             }
         }
+    }
+};
+
+pub const FieldDescription = struct {
+    name: []const u8,
+    tableoid: i32,
+    tableattributenumber: i16,
+    datatypeoid: i32,
+    datatypesize: i16,
+    typemodifier: i32,
+    format: i16 = 0,
+};
+
+pub const RowDescription = struct {
+    fields: []FieldDescription = undefined,
+    _a: Allocator,
+
+    fn init(allocator: Allocator) !RowDescription {
+        return .{ ._a = allocator };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        if (self.fields.len == 0) return;
+
+        for (self.fields) |field| {
+            if (field.name.len > 0) {
+                self._a.free(field.name);
+            }
+        }
+        self._a.free(self.fields);
+    }
+
+    pub fn fieldsCount(self: *@This()) usize {
+        return self.fields.len;
+    }
+
+    pub fn fieldAt(self: *@This(), column: usize) !FieldDescription {
+        std.debug.assert(self.fieldsCount() > column);
+        return self.fields[column];
+    }
+
+    pub fn decodeAlloc(msg: Message, allocator: Allocator) !RowDescription {
+        var reader = msg.reader();
+
+        const msgtype = try reader.readByte();
+        std.debug.assert(msgtype == 'T');
+
+        _ = try reader.readInt32();
+
+        const fieldscount: usize = @intCast(try reader.readInt16());
+
+        var rd = try RowDescription.init(allocator);
+
+        if (fieldscount != 0) {
+            rd.fields = try allocator.alloc(FieldDescription, fieldscount);
+        }
+
+        for (0..fieldscount) |i| {
+            rd.fields[i].name = try rd._a.dupe(u8, try reader.readString());
+            rd.fields[i].tableoid = try reader.readInt32();
+            rd.fields[i].tableattributenumber = try reader.readInt16();
+            rd.fields[i].datatypeoid = try reader.readInt32();
+            rd.fields[i].datatypesize = try reader.readInt16();
+            rd.fields[i].typemodifier = try reader.readInt32();
+            rd.fields[i].format = try reader.readInt16();
+        }
+
+        return rd;
     }
 };
 

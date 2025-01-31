@@ -9,7 +9,8 @@ const StartupMessage = proto3.StartupMessage;
 const SASLInitialResponse = proto3.SASLInitialResponse;
 const SASLResponse = proto3.SASLResponse;
 const Query = proto3.Query;
-const ErrorResposne = proto3.ErrorResponse;
+const ErrorResponse = proto3.ErrorResponse;
+const ErrorResponseRaw = proto3.ErrorResponseRaw;
 
 const Reader = @import("./reader.zig").Reader;
 const Writer = @import("./writer.zig").Writer;
@@ -22,9 +23,8 @@ pub const Conn = struct {
     reader: Reader,
     writer: Writer,
     opts: Opts,
-    scramclient: ?ScramClient = undefined,
-
-    connectionerror: ?ErrorResposne = undefined,
+    scramclient: ?ScramClient = null,
+    connectionerror: ?ErrorResponseRaw = null,
 
     const Self = @This();
 
@@ -100,7 +100,7 @@ pub const Conn = struct {
             switch (msg.msgtype()) {
                 'R' => {},
                 'E' => {
-                    self.connectionerror = try proto3.ErrorResponse.decode(msg);
+                    self.connectionerror = proto3.ErrorResponseRaw{ .msg = msg };
                     return PostgresError.ConnectionError;
                 },
                 else => return PostgresError.ExpectedRequest,
@@ -165,8 +165,8 @@ pub const Conn = struct {
         try self.scramclient.?.verifySeverFinalMessage(data);
     }
 
-    // TODO: clone and return error message, user's allocator will own the memory.
-    pub fn errorAlloc(self: *Self, _: Allocator) !?ErrorResposne {
-        return self.connectionerror;
+    pub fn errorAlloc(self: *Self, allocator: Allocator) !?ErrorResponse {
+        if (self.connectionerror == null) return null;
+        return ErrorResponse.decodeAlloc(self.connectionerror.msg, allocator);
     }
 };

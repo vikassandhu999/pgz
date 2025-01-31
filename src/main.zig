@@ -3,7 +3,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Conn = @import("./conn.zig").Conn;
-const FieldDescription = @import("./rows.zig").FieldDescription;
+const FieldDescription = @import("./proto3/proto3.zig").FieldDescription;
 
 const Email = struct {
     email: []const u8,
@@ -79,9 +79,9 @@ pub fn main() !void {
         users.deinit();
     }
 
-    while (try rows.hasnext()) {
+    while (try rows.hasNext()) {
         const user = try users.addOne();
-        try rows.read(users.allocator, .{ &user.id, &user.email });
+        try rows.readOne(users.allocator, .{ &user.id, &user.email });
     }
 
     for (users.items, 0..) |user, i| {

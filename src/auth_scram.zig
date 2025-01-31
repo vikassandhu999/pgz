@@ -32,20 +32,11 @@ pub const ScramClient = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.clientfirst.len > 0) {
-            self._a.free(self.clientfirst);
-        }
-        if (self.clientnonce.len > 0) {
-            self._a.free(self.clientnonce);
-        }
-        if (self.salt.len > 0) {
-            self._a.free(self.salt);
-        }
-        if (self.serverfirst.len > 0) {
-            self._a.free(self.serverfirst);
-        }
-        if (self.clientfinal.len > 0) {
-            self._a.free(self.clientfinal);
+        const strings = [_][]u8{ self.clientfirst, self.clientnonce, self.salt, self.saltedpassword, self.serverfirst, self.clientfinal, self.authmessage };
+        for (strings) |string| {
+            if (string.len > 0) {
+                self._a.free(string);
+            }
         }
     }
 

@@ -4,28 +4,20 @@ const Allocator = std.mem.Allocator;
 
 const proto3 = @import("./proto3/proto3.zig");
 const ErrorResponse = proto3.ErrorResponse;
+const ErrorResponseRaw = proto3.ErrorResponseRaw;
 const Message = proto3.Message;
+const RowDescription = proto3.RowDescription;
 
 const Reader = @import("./reader.zig").Reader;
 const traits = @import("./traits.zig");
 
-pub const FieldDescription = struct {
-    name: []const u8,
-    tableoid: i32,
-    tableattributenumber: i16,
-    datatypeoid: i32,
-    datatypesize: i16,
-    typemodifier: i32,
-    format: i16 = 0,
-};
-
 pub const Rows = struct {
-    fields: []FieldDescription = undefined,
+    description: RowDescription = undefined,
     reader: *Reader,
     _a: Allocator,
     _state: State = .ReadingRowDescription,
     _reading: ?Message = null,
-    queryerror: ?ErrorResponse = null,
+    queryerror: ?ErrorResponseRaw = null,
 
     const State = enum {
         ReadingRowDescription,
@@ -44,27 +36,39 @@ pub const Rows = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.fields.len > 0) {
-            self._a.free(self.fields);
-        }
+        self.description.deinit();
     }
 
-    pub fn hasnext(self: *Self) !bool {
+    pub fn hasNext(self: *Self) !bool {
         return switch (self._state) {
             .ReadingRowDescription => {
-                try self.read_fielddescription();
-                self._state = .ReadingRows;
-                return self.hasnext();
+                const msg = try self.reader.read();
+                return switch (msg.msgtype()) {
+                    'T' => {
+                        self.description = try RowDescription.decodeAlloc(msg, self._a);
+                        self._state = .ReadingRows;
+                        return self.hasNext();
+                    },
+                    'E' => {
+                        self.queryerror = ErrorResponseRaw{ .msg = msg };
+                        self._state = .Errored;
+                        return false;
+                    },
+                    else => {
+                        self.deinit();
+                        return error.UnexpectedDBMessage;
+                    },
+                };
             },
             .ReadingRows => {
                 if (self._reading != null) {
                     return true;
                 }
-                const rowmsg = try self.reader.read();
+                const msg = try self.reader.read();
                 //TODO: handle all cases for query commands
-                switch (rowmsg.msgtype()) {
+                switch (msg.msgtype()) {
                     'D' => {
-                        self._reading = rowmsg;
+                        self._reading = msg;
                         self._state = .ReadingRows;
                         return true;
                     },
@@ -73,13 +77,11 @@ pub const Rows = struct {
                         return false;
                     },
                     'E' => {
-                        self.queryerror = try ErrorResponse.decode(rowmsg);
-                        std.debug.print("query error: {any}", .{self.queryerror});
+                        self.queryerror = ErrorResponseRaw{ .msg = msg };
                         self._state = .Errored;
                         return false;
                     },
                     else => {
-                        self.deinit();
                         return error.UnexpectedDBMessage;
                     },
                 }
@@ -89,7 +91,7 @@ pub const Rows = struct {
         };
     }
 
-    pub fn read(self: *Self, allocator: Allocator, args: anytype) !void {
+    pub fn readOne(self: *Self, allocator: Allocator, args: anytype) !void {
         const ArgsType = @TypeOf(args);
         const ArgsT = @typeInfo(ArgsType);
 
@@ -112,9 +114,10 @@ pub const Rows = struct {
             }
         }
 
-        if (!try self.hasnext()) {
+        if (!try self.hasNext()) {
             return error.NoMorRows;
         }
+
         const msg = self._reading orelse unreachable;
 
         var rowreader = msg.reader();
@@ -129,7 +132,7 @@ pub const Rows = struct {
         const colscount: usize = @intCast(try rowreader.readInt16());
 
         // fields description count should be same as column count in any given row for this query.
-        std.debug.assert(colscount != self.fields.len);
+        std.debug.assert(colscount != self.description.fieldsCount());
 
         const fields = comptime ArgsT.Struct.fields;
         const argsCount = comptime fields.len;
@@ -159,7 +162,7 @@ pub const Rows = struct {
                         },
                         .Struct => {
                             if (comptime traits.isPgTypeDecoder(Field)) {
-                                const x: Field = try Field.PgType.decodeAlloc(allocator, bytes, self.fields[i]);
+                                const x: Field = try Field.PgType.decodeAlloc(allocator, bytes, try self.description.fieldAt(i));
                                 field.* = x;
                             } else {
                                 @compileError("Struct does not implement PgType.decodeAlloc");
@@ -184,31 +187,8 @@ pub const Rows = struct {
         self._reading = null;
     }
 
-    fn read_fielddescription(self: *Self) !void {
-        const msg = try self.reader.read();
-
-        var msgreader = msg.reader();
-
-        const msgtype = try msgreader.readByte();
-
-        std.debug.assert(msgtype == 'T');
-        // skip length.
-        _ = try msgreader.readInt32();
-
-        const fieldscount: usize = @intCast(try msgreader.readInt16());
-
-        if (fieldscount != 0) {
-            self.fields = try self._a.alloc(FieldDescription, fieldscount);
-        }
-
-        for (0..fieldscount) |i| {
-            self.fields[i].name = try self._a.dupe(u8, try msgreader.readString());
-            self.fields[i].tableoid = try msgreader.readInt32();
-            self.fields[i].tableattributenumber = try msgreader.readInt16();
-            self.fields[i].datatypeoid = try msgreader.readInt32();
-            self.fields[i].datatypesize = try msgreader.readInt16();
-            self.fields[i].typemodifier = try msgreader.readInt32();
-            self.fields[i].format = try msgreader.readInt16();
-        }
+    pub fn errorAlloc(self: *Self, allocator: Allocator) !?ErrorResponse {
+        if (self.queryerror == null) return null;
+        return ErrorResponse.decodeAlloc(self.queryerror.msg, allocator);
     }
 };
